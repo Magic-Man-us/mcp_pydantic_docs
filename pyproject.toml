@@ -1,17 +1,15 @@
 [project]
 name = "mcp-pydantic-docs"
 version = "0.1.0"
-description = "Add your description here"
+description = "MCP server providing local-first access to Pydantic documentation with BM25-powered full-text search"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "beautifulsoup4",
-  "pydantic",
-  "pydantic-ai",
-  "mcp[cli]",
+  "beautifulsoup4>=4.12.0",
+  "pydantic>=2.0",
+  "mcp>=1.0",
   "markdownify>=1.2.0",
   "tiktoken>=0.12.0",
-  "readability-lxml>=0.8.4.1",
   "rank-bm25>=0.2.2",
   "lxml>=4.9",
 ]
