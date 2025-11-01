@@ -2,29 +2,31 @@
 from __future__ import annotations
 
 import json
+import logging
 import pathlib
+import pickle
 import re
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any, Dict, Iterable, List, Tuple
 
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 from markdownify import markdownify as md
 
+# Set up logging
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger(__name__)
+
+_ENC: tiktoken.Encoding | None = None
+
 try:
     import tiktoken
-
     _ENC = tiktoken.get_encoding("cl100k_base")
+except ImportError as e:
+    logger.warning("tiktoken not installed; token counting unavailable: %s", e)
+except Exception as e:
+    logger.error("Failed to initialize tiktoken encoder: %s", e, exc_info=True)
 
-    def tok_len(s: str) -> int:
-        return len(_ENC.encode(s))
-except Exception:
-    _ENC = None
-
-    def tok_len(s: str) -> int:
-        return max(1, len(s) // 4)  # rough fallback
-
-
-MAX_TOK = 1200  # target chunk size
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RAW_P = ROOT / "docs_raw" / "pydantic"
@@ -64,6 +66,20 @@ _REMOVE_SELECTORS = [
     "style",
 ]
 
+def tok_len(s: str) -> int:
+    """Count tokens in string using cl100k_base encoding.
+
+    Raises:
+        RuntimeError: If tiktoken encoder is not available.
+    """
+    if _ENC is None:
+        raise RuntimeError(
+            "tiktoken encoder unavailable; ensure tiktoken is installed "
+            "and cl100k_base encoding is accessible"
+        )
+    return len(_ENC.encode(s))
+
+MAX_TOK = 1200  # target chunk size
 
 def bs4_has_lxml() -> bool:
     try:
@@ -200,19 +216,147 @@ def process_file(
     return recs
 
 
+def _process_file_wrapper(args: tuple[pathlib.Path, str, str]) -> List[Dict[str, Any]]:
+    """Wrapper for process_file to enable parallel processing."""
+    html_path, base_url, source_site = args
+    return process_file(html_path, base_url, source_site)
+
+
 def process_site(
-    raw_root: pathlib.Path, base_url: str, source_site: str, out_jsonl: pathlib.Path
+    raw_root: pathlib.Path,
+    base_url: str,
+    source_site: str,
+    out_jsonl: pathlib.Path,
+    max_workers: int | None = None,
 ) -> None:
+    """Process all HTML files in a documentation site with parallel processing.
+
+    Args:
+        raw_root: Root directory containing HTML files
+        base_url: Base URL for the documentation site
+        source_site: Name of the source site
+        out_jsonl: Output JSONL file path
+        max_workers: Maximum number of worker processes (default: min(CPU count, 4))
+    """
+    import os
+
+    # Use 50% of available CPU cores to keep system responsive
+    if max_workers is None:
+        cpu_count = os.cpu_count() or 1
+        max_workers = max(2, cpu_count // 2)  # At least 2, at most 50% of cores
     if not raw_root.exists():
+        logger.warning(f"Directory not found: {raw_root}")
         return
+
+    html_files = sorted(list(raw_root.rglob("*.html")))
+    if not html_files:
+        logger.warning(f"No HTML files found in {raw_root}")
+        return
+
+    logger.info(f"Processing {len(html_files)} HTML files from {source_site}...")
+
     out_jsonl.parent.mkdir(parents=True, exist_ok=True)
+
+    # Prepare arguments for parallel processing
+    args_list = [(html_path, base_url, source_site) for html_path in html_files]
+
+    all_records = []
+
+    # Process files in parallel
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_process_file_wrapper, args): args[0] for args in args_list
+        }
+
+        completed = 0
+        for future in as_completed(futures):
+            try:
+                records = future.result()
+                all_records.extend(records)
+                completed += 1
+                if completed % 10 == 0 or completed == len(html_files):
+                    logger.info(f"  Processed {completed}/{len(html_files)} files...")
+            except Exception as e:
+                html_path = futures[future]
+                logger.error(f"Error processing {html_path}: {e}")
+
+    # Write all records to JSONL
+    logger.info(f"Writing {len(all_records)} records to {out_jsonl.name}")
     with out_jsonl.open("w", encoding="utf-8") as f:
-        for html_path in sorted(raw_root.rglob("*.html")):
-            for rec in process_file(html_path, base_url, source_site):
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        for rec in all_records:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    logger.info(f"✓ Completed {source_site}: {len(all_records)} records")
+
+
+def build_index(
+    jsonl_files: List[pathlib.Path], output_name: str = "pydantic_all"
+) -> None:
+    """Build BM25 search index from JSONL files.
+
+    Args:
+        jsonl_files: List of JSONL files to index
+        output_name: Base name for output index files
+    """
+    try:
+        from rank_bm25 import BM25Okapi
+    except ImportError:
+        logger.error("rank-bm25 not installed. Run: uv add rank-bm25")
+        return
+
+    logger.info(f"Building BM25 index from {len(jsonl_files)} JSONL files...")
+
+    # Load all records
+    records = []
+    for jsonl_path in jsonl_files:
+        if not jsonl_path.exists():
+            logger.warning(f"File not found: {jsonl_path}")
+            continue
+        with jsonl_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+
+    logger.info(f"Loaded {len(records)} records")
+
+    # Tokenize for BM25
+    def tokenize(text: str) -> List[str]:
+        text = text.lower()
+        text = re.sub(r"[^a-z0-9_#\-\s]", " ", text)
+        return [t for t in text.split() if len(t) > 1]
+
+    corpus = [tokenize(r.get("md_text", "")) for r in records]
+
+    logger.info("Building BM25 index...")
+    bm25 = BM25Okapi(corpus)
+
+    # Save index and records
+    bm25_path = DATA_DIR / f"{output_name}_bm25.pkl"
+    records_path = DATA_DIR / f"{output_name}_records.pkl"
+
+    with bm25_path.open("wb") as f:
+        pickle.dump(bm25, f)
+    with records_path.open("wb") as f:
+        pickle.dump(records, f)
+
+    logger.info("✓ Index saved:")
+    logger.info(f"  BM25: {bm25_path} ({bm25_path.stat().st_size / 1024 / 1024:.1f}MB)")
+    logger.info(
+        f"  Records: {records_path} ({records_path.stat().st_size / 1024 / 1024:.1f}MB)"
+    )
 
 
 def main() -> None:
+    """Main entry point for building search indices with parallel processing."""
+    import time
+
+    start = time.time()
+
+    logger.info("=" * 60)
+    logger.info("BUILDING SEARCH INDICES")
+    logger.info("=" * 60)
+
     process_site(
         RAW_P,
         "https://docs.pydantic.dev/latest",
@@ -229,6 +373,22 @@ def main() -> None:
             "pydantic_settings",
             DATA_DIR / "pydantic_settings.jsonl",
         )
+
+    # Build BM25 index from all JSONL files
+    jsonl_files = [
+        DATA_DIR / "pydantic.jsonl",
+        DATA_DIR / "pydantic_ai.jsonl",
+    ]
+    if (DATA_DIR / "pydantic_settings.jsonl").exists():
+        jsonl_files.append(DATA_DIR / "pydantic_settings.jsonl")
+
+    build_index(jsonl_files, "pydantic_all")
+
+    elapsed = time.time() - start
+    logger.info("=" * 60)
+    logger.info(f"✓ Index build complete in {elapsed:.1f}s")
+    logger.info("=" * 60)
+
 
 if __name__ == "__main__":
     main()

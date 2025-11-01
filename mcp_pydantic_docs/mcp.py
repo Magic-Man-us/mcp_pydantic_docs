@@ -680,7 +680,7 @@ async def t_rebuild_indices() -> Dict[str, Any]:
     description="Get detailed status of documentation cache including file counts and sizes.",
 )
 async def t_cache_status() -> Dict[str, Any]:
-    """Comprehensive cache status report."""
+    """cache status report."""
     def count_html(root: pathlib.Path) -> int:
         return sum(1 for _ in root.rglob("*.html")) if root.exists() else 0
     

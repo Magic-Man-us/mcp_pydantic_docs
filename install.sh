@@ -103,7 +103,7 @@ echo '   }'
 echo ""
 echo "2. Restart your MCP client (e.g., reload VS Code)"
 echo ""
-echo "3. Test with: pydantic.search(query='BaseModel')"
+echo "3. Test with: pydantic_search(query='BaseModel')"
 echo ""
 echo "Documentation: See README.md for full details"
 echo "=========================================="

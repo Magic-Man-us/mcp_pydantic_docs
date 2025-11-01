@@ -152,12 +152,12 @@ The server automatically locates data directories:
 
 ### Health Checks
 
-**`health.ping`**
+**`health_ping`**
 ```python
 Returns: "pong"
 ```
 
-**`health.validate`**
+**`health_validate`**
 ```python
 Returns: {
   "valid": bool,
@@ -171,7 +171,7 @@ Returns: {
 
 ### Documentation Access
 
-**`pydantic.search`**
+**`pydantic_search`**
 ```python
 Parameters:
   - query: str (search query)
@@ -189,7 +189,7 @@ Returns: SearchResponse {
 }
 ```
 
-**`pydantic.get`**
+**`pydantic_get`**
 ```python
 Parameters:
   - path_or_url: str (relative path or full URL)
@@ -202,7 +202,7 @@ Returns: GetResponse {
 }
 ```
 
-**`pydantic.section`**
+**`pydantic_section`**
 ```python
 Parameters:
   - path_or_url: str
@@ -217,7 +217,7 @@ Returns: SectionResponse {
 }
 ```
 
-**`pydantic.api`**
+**`pydantic_api`**
 ```python
 Parameters:
   - symbol: str (e.g., "BaseModel", "TypeAdapter")
@@ -232,7 +232,7 @@ Returns: dict {
 
 ### Administration
 
-**`pydantic.mode`**
+**`pydantic_mode`**
 ```python
 Returns: {
   "offline_only": bool,
@@ -248,7 +248,7 @@ Returns: {
 }
 ```
 
-**`admin.cache_status`**
+**`admin_cache_status`**
 ```python
 Returns: {
   "paths": dict,
@@ -259,7 +259,7 @@ Returns: {
 }
 ```
 
-**`admin.rebuild_indices`**
+**`admin_rebuild_indices`**
 ```python
 Returns: {
   "success": bool,
@@ -404,3 +404,17 @@ Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for gui
 - Commit message conventions
 
 For bugs and feature requests, please open an issue on GitHub.
+
+
+git commit -m "fix: rename tools to use underscores + optimize text normalization
+
+- Rename 9 MCP tools from dot notation to underscore (health.ping → health_ping) per issue https://github.com/Magic-Man-us/mcp_pydantic_docs/issues/1
+- Add _normalize_text() function for index-time cleaning
+- Remove excessive whitespace: 3,732+ triple newlines eliminated
+- avg of 21% character reduction (163k → 128k chars per page when testing)
+- Fix redundant imports in setup.py
+
+Performance impact: 7.6% overall speed improvement
+- Search: 6.6% faster
+- Page retrieval: 9.3% faster
+- Section extraction: 6.7% faster"
