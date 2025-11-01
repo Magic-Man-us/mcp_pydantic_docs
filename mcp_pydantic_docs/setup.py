@@ -15,11 +15,11 @@ DATA_DIR = ROOT / "data"
 
 def download_pydantic_docs() -> bool:
     """Download Pydantic v2 documentation."""
-    print("📥 Downloading Pydantic v2 documentation...")
+    print("Downloading Pydantic v2 documentation...")
     target = DOCS_RAW / "pydantic"
     
     if target.exists():
-        print(f"  ⚠️  {target} already exists. Use --force to overwrite.")
+        print(f"  {target} already exists. Use --force to overwrite.")
         return False
     
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -47,11 +47,11 @@ def download_pydantic_docs() -> bool:
 
 def download_pydantic_ai_docs() -> bool:
     """Download Pydantic AI documentation."""
-    print("📥 Downloading Pydantic AI documentation...")
+    print("Downloading Pydantic AI documentation...")
     target = DOCS_RAW / "pydantic_ai"
     
     if target.exists():
-        print(f"  ⚠️  {target} already exists. Use --force to overwrite.")
+        print(f"  {target} already exists. Use --force to overwrite.")
         return False
     
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -79,11 +79,11 @@ def download_pydantic_ai_docs() -> bool:
 
 def download_pydantic_settings_docs() -> bool:
     """Download Pydantic Settings documentation."""
-    print("📥 Downloading Pydantic Settings documentation...")
+    print("Downloading Pydantic Settings documentation...")
     target = DOCS_RAW / "pydantic_settings"
     
     if target.exists():
-        print(f"  ⚠️  {target} already exists. Use --force to overwrite.")
+        print(f"  {target} already exists. Use --force to overwrite.")
         return False
     
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -103,7 +103,6 @@ def download_pydantic_settings_docs() -> bool:
             capture_output=True,
         )
         # Move the site directory to the target
-        import shutil
         site_dir = target / "temp" / "site"
         if site_dir.exists():
             for item in site_dir.iterdir():
@@ -122,8 +121,8 @@ def download_pydantic_settings_docs() -> bool:
 
 def extract_to_jsonl() -> bool:
     """Extract HTML docs to JSONL format for indexing."""
-    print("📝 Extracting documentation to JSONL...")
-    
+    print("Extracting documentation to JSONL...")
+
     try:
         from mcp_pydantic_docs.normalize import main as normalize_main
         
@@ -324,7 +323,7 @@ def main() -> int:
         print("\n💡 Next steps:")
         print("  1. Configure the server in your MCP client (see README.md)")
         print("  2. Restart your MCP client")
-        print("  3. Test with: pydantic.search(query='BaseModel')")
+        print("  3. Test with: pydantic_search(query='BaseModel')")
         return 0
     else:
         print("\n❌ Setup failed. See errors above.")

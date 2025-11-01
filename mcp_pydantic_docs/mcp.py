@@ -81,6 +81,8 @@ class SearchHit(BaseModel):
     url: str
     anchor: Optional[str] = None
     snippet: str = Field(default="", max_length=1200)
+    heading_title: Optional[str] = None  # new
+
 
 class SearchResponse(BaseModel):
     results: List[SearchHit]
@@ -90,6 +92,10 @@ class GetResponse(BaseModel):
     path: str
     text: str
     html: str
+    truncated: bool = False
+    text_length: int = 0
+    html_length: int = 0
+    max_chars: Optional[int] = None
 
 class SectionResponse(BaseModel):
     url: str
@@ -98,6 +104,39 @@ class SectionResponse(BaseModel):
     section: str
     truncated: bool = False
 
+def _extract_headings(html: str) -> list[dict]:
+    soup = BeautifulSoup(html, "lxml" if bs4_has_lxml() else "html.parser")
+    out: list[dict] = []
+    for h in soup.select("h1[id],h2[id],h3[id]"):
+        out.append({"anchor": h.get("id"), "title": h.get_text(" ", strip=True)})
+    return out
+
+
+@lru_cache(maxsize=1)
+def _mkdocs_load_index() -> Dict[str, Any]:
+    if INDEX_PATH.exists():
+        try:
+            return json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    docs: List[Dict[str, Any]] = []
+    for html_path in DOC_ROOT.rglob("*.html"):
+        try:
+            raw = html_path.read_text(encoding="utf-8", errors="ignore")
+            soup = BeautifulSoup(raw, "lxml" if bs4_has_lxml() else "html.parser")
+            text = soup.get_text(" ")
+            rel = html_path.relative_to(DOC_ROOT).as_posix()
+            docs.append(
+                {
+                    "location": rel,
+                    "title": html_path.stem,
+                    "text": text,
+                    "headings": _extract_headings(raw),
+                }
+            )
+        except Exception:
+            continue
+    return {"docs": docs}
 # ---- helpers ----
 def bs4_has_lxml() -> bool:
     try:
@@ -129,8 +168,23 @@ def _safe_rel_from_url(path_or_url: str) -> Tuple[pathlib.Path, str]:
         root, rel = DOC_ROOT, s[len(BASE_PYDANTIC):]
     elif s.startswith(BASE_PYDANTIC_AI):
         root, rel = DOC_ROOT_AI, s[len(BASE_PYDANTIC_AI):]
+    elif s.startswith(LOCAL_BASE_P):
+        root, rel = DOC_ROOT, s[len(LOCAL_BASE_P) :]
+    elif s.startswith(LOCAL_BASE_AI):
+        root, rel = DOC_ROOT_AI, s[len(LOCAL_BASE_AI) :]
     else:
-        root, rel = DOC_ROOT, s
+        # For relative paths, try pydantic_ai first, then pydantic
+        rel_clean = s.split("#", 1)[0].lstrip("/").replace("..", "")
+        ai_path = (DOC_ROOT_AI / rel_clean).resolve()
+        p_path = (DOC_ROOT / rel_clean).resolve()
+
+        if ai_path.is_file() and _is_within(DOC_ROOT_AI, ai_path):
+            root, rel = DOC_ROOT_AI, s
+        elif p_path.is_file() and _is_within(DOC_ROOT, p_path):
+            root, rel = DOC_ROOT, s
+        else:
+            # Default to pydantic for backward compatibility
+            root, rel = DOC_ROOT, s
     rel = rel.split("#", 1)[0]
     rel = rel.lstrip("/").replace("..", "")
     return root, rel
@@ -163,25 +217,6 @@ def _extract_section(html_str: str, anchor: str) -> str:
     text = "\n".join(filter(None, out))
     return text[:MAX_SECTION]
 
-@lru_cache(maxsize=1)
-def _mkdocs_load_index() -> Dict[str, Any]:
-    if INDEX_PATH.exists():
-        try:
-            return json.loads(INDEX_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    docs: List[Dict[str, Any]] = []
-    for html_path in DOC_ROOT.rglob("*.html"):
-        try:
-            text = BeautifulSoup(
-                html_path.read_text(encoding="utf-8", errors="ignore"),
-                "lxml" if bs4_has_lxml() else "html.parser",
-            ).get_text(" ")
-        except Exception:
-            continue
-        rel = html_path.relative_to(DOC_ROOT).as_posix()
-        docs.append({"location": rel, "title": html_path.stem, "text": text})
-    return {"docs": docs}
 
 @lru_cache(maxsize=1)
 def _load_bm25() -> Tuple[Any, Any]:
@@ -190,12 +225,37 @@ def _load_bm25() -> Tuple[Any, Any]:
         records = pickle.load(f2)
     return bm25, records
 
+
 INDEX = None if _HAS_BM25 else _mkdocs_load_index()
+
+
+# --- snippet cleaning ---
+_SNIP_MAX = 420
+_LINE_NO_BURST = re.compile(r"(?:^|\s)(?:\d{1,4}\s+){5,}\d{1,4}(?=\s|$)")
+_FENCE = re.compile(r"`{3,}.*?`{3,}", re.S)  # strip fenced blocks
+_PIPE_ROWS = re.compile(r"^\s*\|.*\|\s*$", re.M)  # drop markdown table rows
+_MULTI_WS = re.compile(r"\s+")
+
+
+def _clean_snippet(s: str) -> str:
+    """Clean snippet for search results."""
+    # drop obvious noise first
+    s = _FENCE.sub(" ", s)
+    s = _PIPE_ROWS.sub(" ", s)
+    s = _LINE_NO_BURST.sub(" ", s)
+    # collapse pipes & leftover fence ticks
+    s = s.replace("|", " ").replace("`", " ")
+    # collapse whitespace and trim
+    s = _MULTI_WS.sub(" ", s).strip()
+    # bound length
+    return s[:_SNIP_MAX]
+
 
 def _tokenize(s: str) -> List[str]:
     s = s.lower()
     s = re.sub(r"[^a-z0-9_#\-\s]", " ", s)
     return [t for t in s.split() if len(t) > 1]
+
 
 def _rank_hits_bm25(query: str, k: int = 10) -> List[Dict[str, Any]]:
     bm25, records = _load_bm25()
@@ -203,13 +263,20 @@ def _rank_hits_bm25(query: str, k: int = 10) -> List[Dict[str, Any]]:
     scores = bm25.get_scores(toks)
     idxs = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
     out: List[Dict[str, Any]] = []
+    q = " ".join(toks)
     for i in idxs:
         r = records[i]
-        snippet = (r.get("md_text") or "")[:MAX_SNIPPET]
+        text = r.get("md_text") or ""
+        pos = text.lower().find(q) if q else -1
+        raw = text[max(0, pos - 120) : pos + 200] if pos != -1 else text[:MAX_SNIPPET]
+        snippet = _clean_snippet(raw)
         out.append(
             {
                 "title": r.get("title", ""),
-                "url": _display_url(DOC_ROOT_AI if r.get("source_site") == "pydantic_ai" else DOC_ROOT, r.get("page", "")),
+                "url": _display_url(
+                    DOC_ROOT_AI if r.get("source_site") == "pydantic_ai" else DOC_ROOT,
+                    r.get("page", ""),
+                ),
                 "anchor": r.get("anchor"),
                 "snippet": snippet,
                 "page": r.get("page"),
@@ -218,13 +285,15 @@ def _rank_hits_bm25(query: str, k: int = 10) -> List[Dict[str, Any]]:
         )
     return out
 
+
 def _rank_hits_mkdocs(query: str, k: int = 10) -> List[Dict[str, Any]]:
     q = query.lower()
     scored: List[Tuple[int, Dict[str, Any]]] = []
     for d in INDEX.get("docs", []):  # type: ignore[union-attr]
-        text = d.get("text", "").lower()
+        text = d.get("text", "")
+        tl = text.lower()
         title = d.get("title", "").lower()
-        score = 3 * title.count(q) + text.count(q)
+        score = 3 * title.count(q) + tl.count(q)
         if score:
             scored.append((score, d))
     scored.sort(reverse=True, key=lambda x: x[0])
@@ -233,8 +302,14 @@ def _rank_hits_mkdocs(query: str, k: int = 10) -> List[Dict[str, Any]]:
         rel = d["location"]
         base_root = DOC_ROOT_AI if (DOC_ROOT_AI.exists() and (DOC_ROOT_AI / rel).exists()) else DOC_ROOT
         text = d.get("text", "")
-        pos = text.lower().find(q)
-        snippet = text[max(0, pos - 120) : pos + 200].replace("\n", " ") if pos != -1 else text[:MAX_SNIPPET]
+        tl = text.lower()
+        pos = tl.find(q)
+        raw = (
+            text[max(0, pos - 120) : pos + 200].replace("\n", " ")
+            if pos != -1
+            else text[:MAX_SNIPPET]
+        )
+        snippet = _clean_snippet(raw)
         out.append(
             {
                 "title": d.get("title", ""),
@@ -358,11 +433,13 @@ mcp = FastMCP("pydantic-docs")
 # Auto-initialize on startup
 _auto_initialize()
 
-@mcp.tool(name="health.ping", description="Returns simple pong")
+@mcp.tool(name="health_ping", description="Returns simple pong")
 def ping() -> str:
     return "pong"
 
-@mcp.tool(name="health.validate", description="Validate search indices and data integrity")
+@mcp.tool(
+    name="health_validate", description="Validate search indices and data integrity"
+)
 def validate() -> dict:
     """Check if all required data files exist and are valid."""
     is_valid, message = _validate_indices()
@@ -376,7 +453,7 @@ def validate() -> dict:
         "records_size_mb": RECORDS_PATH.stat().st_size / 1024 / 1024 if RECORDS_PATH.exists() else 0,
     }
 
-@mcp.tool(name="pydantic.mode", description="Report data roots and offline mode.")
+@mcp.tool(name="pydantic_mode", description="Report data roots and offline mode.")
 def t_mode() -> dict:
     def count_html(root: pathlib.Path) -> int:
         return sum(1 for _ in root.rglob("*.html")) if root.exists() else 0
@@ -395,34 +472,142 @@ def t_mode() -> dict:
     }
 
 @mcp.tool(
-    name="pydantic.search",
-    description="Search local Pydantic + Pydantic-AI docs. Returns hits with title, url, snippet.",
+    name="pydantic_search",
+    description="Search local Pydantic + Pydantic-AI docs with filters.",
 )
-async def t_search(query: str, k: int = 10) -> SearchResponse:
+async def t_search(
+    query: str,
+    k: int = 10,
+    site: Optional[str] = None,  # "pydantic" | "pydantic_ai"
+    heading: Optional[str] = None,  # matches heading title substring
+    keywords: Optional[str] = None,  # space-separated required tokens
+) -> SearchResponse:
+    # k bounds
     try:
-        k = int(k)
-        if k <= 0 or k > 25:
-            k = 10
+        k = max(1, min(50, int(k)))
     except Exception:
         k = 10
-    hits = _rank_hits_bm25(query, k) if _HAS_BM25 else _rank_hits_mkdocs(query, k)
-    try:
-        return SearchResponse(results=[SearchHit(**h) for h in hits])
-    except ValidationError:
-        return SearchResponse(results=[SearchHit(**h) for h in hits])
 
-@mcp.tool(name="pydantic.get", description="Fetch a local doc page and return plain text + html.")
-async def t_get(path_or_url: str) -> GetResponse:
+    # choose ranker
+    hits = (
+        _rank_hits_bm25(query, k * 3) if _HAS_BM25 else _rank_hits_mkdocs(query, k * 3)
+    )
+
+    # site filter
+    if site in {"pydantic", "pydantic_ai"}:
+        prefix = (
+            "local://pydantic-ai/" if site == "pydantic_ai" else "local://pydantic/"
+        )
+        hits = [h for h in hits if h.get("url", "").startswith(prefix)]
+
+    # heading filter (index-based for mkdocs; heuristic for bm25)
+    if heading:
+        hq = heading.lower()
+        filtered = []
+        for h in hits:
+            rel = (
+                h["url"].split("local://pydantic-ai/")[-1]
+                if "pydantic-ai" in h["url"]
+                else h["url"].split("local://pydantic/")[-1]
+            )
+            page = (
+                next(
+                    (
+                        d
+                        for d in (INDEX or {}).get("docs", [])
+                        if d.get("location") == rel
+                    ),
+                    None,
+                )
+                if INDEX
+                else None
+            )
+            match_title = None
+            if page and "headings" in page:
+                for hd in page["headings"]:
+                    if hq in (hd.get("title", "").lower()):
+                        match_title = hd.get("title")
+                        break
+            # if mkdocs index missing headings, fall back to snippet contains
+            if match_title or (hq in h.get("snippet", "").lower()):
+                h["heading_title"] = match_title
+                filtered.append(h)
+        hits = filtered
+
+    # keywords filter (all tokens must appear in snippet or title)
+    if keywords:
+        toks = [t for t in re.split(r"\s+", keywords.strip()) if t]
+
+        def ok(h: dict) -> bool:
+            hay = (h.get("title", "") + " " + h.get("snippet", "")).lower()
+            return all(t.lower() in hay for t in toks)
+
+        hits = [h for h in hits if ok(h)]
+
+    # trim to k
+    hits = hits[:k]
+    return SearchResponse(results=[SearchHit(**h) for h in hits])
+
+@mcp.tool(
+    name="pydantic_get",
+    description="Fetch a local doc page and return plain text + html. Supports chunking for large documents via max_chars parameter.",
+)
+async def t_get(path_or_url: str, max_chars: Optional[int] = None) -> GetResponse:
+    """
+    Fetch a local documentation page.
+
+    Args:
+        path_or_url: Path or URL to the documentation page
+        max_chars: Optional maximum characters for text and html. If provided and content exceeds this,
+                  both text and html will be truncated. Useful for large API reference pages.
+                  Default: None (no truncation)
+    """
     root, rel = _safe_rel_from_url(path_or_url)
     html_str = _read_page(root, rel)
     text = BeautifulSoup(html_str, "lxml" if bs4_has_lxml() else "html.parser").get_text("\n")
     url = _display_url(root, rel)
-    try:
-        return GetResponse(url=url, path=rel, text=text, html=html_str)
-    except ValidationError:
-        return GetResponse(url=url, path=rel, text=text, html=html_str)
 
-@mcp.tool(name="pydantic.section", description="Extract a section by anchor from a local page.")
+    # Track original lengths
+    text_length = len(text)
+    html_length = len(html_str)
+    truncated = False
+
+    # Apply chunking if max_chars specified
+    if max_chars and max_chars > 0:
+        if text_length > max_chars:
+            text = text[:max_chars] + "\n\n[... truncated ...]"
+            truncated = True
+        if html_length > max_chars:
+            html_str = html_str[:max_chars] + "\n<!-- ... truncated ... -->"
+            truncated = True
+
+    try:
+        return GetResponse(
+            url=url,
+            path=rel,
+            text=text,
+            html=html_str,
+            truncated=truncated,
+            text_length=text_length,
+            html_length=html_length,
+            max_chars=max_chars,
+        )
+    except ValidationError:
+        return GetResponse(
+            url=url,
+            path=rel,
+            text=text,
+            html=html_str,
+            truncated=truncated,
+            text_length=text_length,
+            html_length=html_length,
+            max_chars=max_chars,
+        )
+
+@mcp.tool(
+    name="pydantic_section",
+    description="Extract a section by anchor from a local page.",
+)
 async def t_section(path_or_url: str, anchor: str) -> SectionResponse:
     root, rel = _safe_rel_from_url(path_or_url)
     html_str = _read_page(root, rel)
@@ -440,7 +625,10 @@ API_ALIASES: Dict[str, str] = {
     "Settings": "concepts/pydantic_settings/",
 }
 
-@mcp.tool(name="pydantic.api", description="Jump to an API page by symbol name. Optional anchor.")
+@mcp.tool(
+    name="pydantic_api",
+    description="Jump to an API page by symbol name. Optional anchor.",
+)
 async def t_api(symbol: str, anchor: Optional[str] = None) -> Dict[str, Any]:
     rel = API_ALIASES.get(symbol) or "api/"
     root = DOC_ROOT
@@ -454,7 +642,10 @@ async def t_api(symbol: str, anchor: Optional[str] = None) -> Dict[str, Any]:
     url = _display_url(root, rel)
     return {"symbol": symbol, "url": url, "text": text}
 
-@mcp.tool(name="admin.rebuild_indices", description="Rebuild BM25 search indices from JSONL files. Use when indices are missing or corrupted.")
+@mcp.tool(
+    name="admin_rebuild_indices",
+    description="Rebuild BM25 search indices from JSONL files. Use when indices are missing or corrupted.",
+)
 async def t_rebuild_indices() -> Dict[str, Any]:
     """Rebuild search indices from existing JSONL files."""
     try:
@@ -484,7 +675,10 @@ async def t_rebuild_indices() -> Dict[str, Any]:
     except Exception as e:
         return {"success": False, "message": f"Failed to rebuild indices: {e}"}
 
-@mcp.tool(name="admin.cache_status", description="Get detailed status of documentation cache including file counts and sizes.")
+@mcp.tool(
+    name="admin_cache_status",
+    description="Get detailed status of documentation cache including file counts and sizes.",
+)
 async def t_cache_status() -> Dict[str, Any]:
     """Comprehensive cache status report."""
     def count_html(root: pathlib.Path) -> int:
