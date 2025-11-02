@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import pathlib
 import pickle
 import re
@@ -11,11 +10,12 @@ from typing import Any, Dict, Iterable, List, Tuple
 
 from bs4 import BeautifulSoup
 from bs4.element import Tag
-from markdownify import markdownify as md
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format="%(message)s")
-logger = logging.getLogger(__name__)
+from .logger import logger
+from .utils import (
+    clean_html_for_text,
+    to_markdown,
+)
 
 _ENC: tiktoken.Encoding | None = None
 
@@ -37,34 +37,6 @@ DATA_DIR = ROOT / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 MD_DIR.mkdir(parents=True, exist_ok=True)
 
-# --- boilerplate stripping and main-content focus ---
-_MAIN_SELECTORS = [
-    "main[role='main']",
-    "main",
-    "div.md-content__inner",
-    "div.md-content",
-    "div.md-main__inner",
-    "article",
-    "div.md-typeset",
-]
-_REMOVE_SELECTORS = [
-    "nav",
-    "header",
-    "footer",
-    "aside",
-    ".md-header",
-    ".md-sidebar",
-    ".md-nav",
-    ".md-footer",
-    ".md-search",
-    ".md-search__overlay",
-    ".md-tabs",
-    ".skip-link",
-    ".sr-only",
-    ".visually-hidden",
-    "script",
-    "style",
-]
 
 def tok_len(s: str) -> int:
     """Count tokens in string using cl100k_base encoding.
@@ -79,52 +51,8 @@ def tok_len(s: str) -> int:
         )
     return len(_ENC.encode(s))
 
+
 MAX_TOK = 1200  # target chunk size
-
-def bs4_has_lxml() -> bool:
-    try:
-        import lxml  # noqa: F401
-
-        return True
-    except Exception:
-        return False
-
-
-def _clean_html_for_text(html: str) -> BeautifulSoup:
-    soup = BeautifulSoup(html, "lxml" if bs4_has_lxml() else "html.parser")
-    for sel in _REMOVE_SELECTORS:
-        for el in soup.select(sel):
-            el.decompose()
-    main: Tag | None = None
-    for sel in _MAIN_SELECTORS:
-        m = soup.select_one(sel)
-        if isinstance(m, Tag):
-            main = m
-            break
-    if main is not None:
-        soup = BeautifulSoup(str(main), "lxml" if bs4_has_lxml() else "html.parser")
-        for sel in _REMOVE_SELECTORS:
-            for el in soup.select(sel):
-                el.decompose()
-    return soup
-
-
-# --- markdown and cleaning ---
-_FENCE = re.compile(r"`{3,}.*?`{3,}", re.S)
-_PIPE_ROWS = re.compile(r"^\s*\|.*\|\s*$", re.M)
-_LINE_NO_BURST = re.compile(r"(?:^|\s)(?:\d{1,4}\s+){5,}\d{1,4}(?=\s|$)")
-_MULTI_WS = re.compile(r"\s+")
-
-
-def to_markdown(html_fragment: str) -> str:
-    m = md(html_fragment, heading_style="ATX")
-    m = re.sub(r"```(\s*)\n```", "", m)
-    m = _FENCE.sub(" ", m)
-    m = _PIPE_ROWS.sub(" ", m)
-    m = _LINE_NO_BURST.sub(" ", m)
-    m = m.replace("|", " ").replace("`", " ")
-    m = _MULTI_WS.sub(" ", m).strip()
-    return m
 
 
 # --- section extraction using REAL HTML anchors ---
@@ -189,7 +117,7 @@ def process_file(
     url = base_url.rstrip("/") + "/" + rel
 
     raw_html = html_path.read_text(encoding="utf-8", errors="ignore")
-    soup = _clean_html_for_text(raw_html)
+    soup = clean_html_for_text(raw_html)
 
     # page-level markdown snapshot (debugging/inspection)
     page_md = to_markdown(str(soup))

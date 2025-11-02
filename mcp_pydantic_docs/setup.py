@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import pathlib
 import shutil
-import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -13,125 +12,35 @@ DOCS_RAW = ROOT / "docs_raw"
 DATA_DIR = ROOT / "data"
 
 
-def download_pydantic_docs() -> bool:
-    """Download Pydantic v2 documentation."""
-    print("Downloading Pydantic v2 documentation...")
-    target = DOCS_RAW / "pydantic"
+def download_and_extract_docs() -> bool:
+    """
+    Clone source repositories and extract documentation to JSONL format.
     
-    if target.exists():
-        print(f"  {target} already exists. Use --force to overwrite.")
-        return False
-    
-    target.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Clone the docs repo (built docs are in gh-pages branch)
-    try:
-        subprocess.run(
-            [
-                "git",
-                "clone",
-                "--depth=1",
-                "--branch=gh-pages",
-                "https://github.com/pydantic/pydantic.git",
-                str(target),
-            ],
-            check=True,
-            capture_output=True,
-        )
-        print("  ✅ Pydantic docs downloaded")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"  ❌ Failed to download: {e}")
-        return False
-
-
-def download_pydantic_ai_docs() -> bool:
-    """Download Pydantic AI documentation."""
-    print("Downloading Pydantic AI documentation...")
-    target = DOCS_RAW / "pydantic_ai"
-    
-    if target.exists():
-        print(f"  {target} already exists. Use --force to overwrite.")
-        return False
-    
-    target.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Clone the AI docs repo (built docs are in gh-pages branch)
-    try:
-        subprocess.run(
-            [
-                "git",
-                "clone",
-                "--depth=1",
-                "--branch=gh-pages",
-                "https://github.com/pydantic/pydantic-ai.git",
-                str(target),
-            ],
-            check=True,
-            capture_output=True,
-        )
-        print("  ✅ Pydantic AI docs downloaded")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"  ❌ Failed to download: {e}")
-        return False
-
-
-def download_pydantic_settings_docs() -> bool:
-    """Download Pydantic Settings documentation."""
-    print("Downloading Pydantic Settings documentation...")
-    target = DOCS_RAW / "pydantic_settings"
-    
-    if target.exists():
-        print(f"  {target} already exists. Use --force to overwrite.")
-        return False
-    
-    target.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Clone the settings docs repo (built docs are in main branch site directory)
-    try:
-        subprocess.run(
-            [
-                "git",
-                "clone",
-                "--depth=1",
-                "--branch=main",
-                "https://github.com/pydantic/pydantic-settings.git",
-                str(target / "temp"),
-            ],
-            check=True,
-            capture_output=True,
-        )
-        # Move the site directory to the target
-        site_dir = target / "temp" / "site"
-        if site_dir.exists():
-            for item in site_dir.iterdir():
-                shutil.move(str(item), str(target))
-            shutil.rmtree(target / "temp")
-            print("  ✅ Pydantic Settings docs downloaded")
-            return True
-        else:
-            shutil.rmtree(target / "temp")
-            print("  ❌ site directory not found in repo")
-            return False
-    except subprocess.CalledProcessError as e:
-        print(f"  ❌ Failed to download: {e}")
-        return False
-
-
-def extract_to_jsonl() -> bool:
-    """Extract HTML docs to JSONL format for indexing."""
-    print("Extracting documentation to JSONL...")
+    This replaces the old HTML-based approach with direct extraction from
+    source repositories (main branch), eliminating formatting artifacts.
+    """
+    print("📥 Cloning source repositories and extracting documentation...")
 
     try:
-        from mcp_pydantic_docs.normalize import main as normalize_main
+        from mcp_pydantic_docs.source_extractor import main as extractor_main
         
+        # Create output directories
+        DOCS_RAW.mkdir(parents=True, exist_ok=True)
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        normalize_main()
-        print("  ✅ JSONL files created")
-        return True
+        
+        # Run source-based extraction
+        success = extractor_main()
+        
+        if success:
+            print("  ✅ Documentation extracted to JSONL")
+        else:
+            print("  ❌ Extraction failed")
+        
+        return success
     except Exception as e:
         print(f"  ❌ Failed to extract: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -190,22 +99,24 @@ def check_status() -> None:
     print(f"  Root: {ROOT}")
     print()
     
-    # Check docs
-    pydantic_docs = DOCS_RAW / "pydantic"
-    pydantic_ai_docs = DOCS_RAW / "pydantic_ai"
+    # Check source repositories
+    pydantic_repo = DOCS_RAW / "pydantic"
+    pydantic_ai_repo = DOCS_RAW / "pydantic_ai"
     
-    print("  Documentation:")
-    if pydantic_docs.exists():
-        html_count = len(list(pydantic_docs.rglob("*.html")))
-        print(f"    ✅ Pydantic v2: {html_count} HTML files")
+    print("  Source Repositories:")
+    if pydantic_repo.exists():
+        md_count = len(list(pydantic_repo.rglob("*.md")))
+        py_count = len(list(pydantic_repo.rglob("*.py")))
+        print(f"    ✅ Pydantic v2: {md_count} markdown + {py_count} Python files")
     else:
-        print("    ❌ Pydantic v2: not downloaded")
+        print("    ❌ Pydantic v2: not cloned")
     
-    if pydantic_ai_docs.exists():
-        html_count = len(list(pydantic_ai_docs.rglob("*.html")))
-        print(f"    ✅ Pydantic AI: {html_count} HTML files")
+    if pydantic_ai_repo.exists():
+        md_count = len(list(pydantic_ai_repo.rglob("*.md")))
+        py_count = len(list(pydantic_ai_repo.rglob("*.py")))
+        print(f"    ✅ Pydantic AI: {md_count} markdown + {py_count} Python files")
     else:
-        print("    ❌ Pydantic AI: not downloaded")
+        print("    ❌ Pydantic AI: not cloned")
     
     print()
     print("  Search Data:")
@@ -295,27 +206,23 @@ def main() -> int:
     
     success = True
     
-    # Download phase
-    if args.download or args.download_only:
+    # Extract phase (clones repos and creates JSONL)
+    if args.download or args.download_only or args.build_index:
         if args.force:
             if (DOCS_RAW / "pydantic").exists():
                 shutil.rmtree(DOCS_RAW / "pydantic")
             if (DOCS_RAW / "pydantic_ai").exists():
                 shutil.rmtree(DOCS_RAW / "pydantic_ai")
         
-        success = download_pydantic_docs() and success
-        success = download_pydantic_ai_docs() and success
-        
-        if not success:
-            print("\n❌ Download failed")
-            return 1
+        if not args.build_index_only:
+            success = download_and_extract_docs() and success
+            
+            if not success:
+                print("\n❌ Extraction failed")
+                return 1
     
-    # Build phase
-    if args.download or args.build_index:
-        if not args.download_only:
-            success = extract_to_jsonl() and success
-            success = build_search_index() and success
-    elif args.build_index_only:
+    # Build index phase
+    if (args.download or args.build_index or args.build_index_only) and not args.download_only:
         success = build_search_index() and success
     
     if success:

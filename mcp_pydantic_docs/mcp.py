@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import pathlib
 import pickle
 import re
-import sys
 from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -17,13 +15,12 @@ from bs4.element import Tag
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field, ValidationError
 
+from .logger import logger
+from .utils import bs4_has_lxml, normalize_text
+
 # ---- mode ----
 # Dynamic offline mode: starts permissive, locks offline after docs are cached
 _OFFLINE_ONLY = True  # Will be dynamically adjusted based on cache state
-
-# ---- logging ----
-logging.basicConfig(stream=sys.stderr, level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # ---- paths & constants (env-overrideable) ----
 def _find_project_root() -> pathlib.Path:
@@ -137,14 +134,9 @@ def _mkdocs_load_index() -> Dict[str, Any]:
         except Exception:
             continue
     return {"docs": docs}
-# ---- helpers ----
-def bs4_has_lxml() -> bool:
-    try:
-        import lxml  # noqa: F401
-        return True
-    except Exception:
-        return False
 
+
+# ---- helpers ----
 def _is_within(root: pathlib.Path, path: pathlib.Path) -> bool:
     try:
         path.resolve().relative_to(root.resolve())
@@ -565,6 +557,7 @@ async def t_get(path_or_url: str, max_chars: Optional[int] = None) -> GetRespons
     root, rel = _safe_rel_from_url(path_or_url)
     html_str = _read_page(root, rel)
     text = BeautifulSoup(html_str, "lxml" if bs4_has_lxml() else "html.parser").get_text("\n")
+    text = normalize_text(text)
     url = _display_url(root, rel)
 
     # Track original lengths

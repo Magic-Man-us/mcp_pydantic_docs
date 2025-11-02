@@ -4,12 +4,12 @@ A Model Context Protocol (MCP) server providing local-first access to Pydantic a
 
 ## Features
 
-- Local-first architecture with offline-only mode (configurable)
-- BM25 full-text search across all documentation
-- Pre-processed JSONL data included for fast setup
-- Intelligent path resolution (no hardcoded paths)
-- Complete coverage of Pydantic v2 and Pydantic AI documentation
-- Path validation and security controls
+- **Local-first architecture** - Offline-only mode by default
+- **BM25 full-text search** - Fast semantic search across all docs
+- **Git-based extraction** - Direct from source repositories (no HTML scraping)
+- **Pre-processed data** - JSONL files included for instant setup
+- **Auto-initialization** - Builds indices automatically on first run
+- **Complete coverage** - Pydantic v2 and Pydantic AI documentation
 
 ## Requirements
 
@@ -20,71 +20,13 @@ A Model Context Protocol (MCP) server providing local-first access to Pydantic a
 ## Quick Start
 
 ```bash
-# Clone repository
+# Clone and install
 git clone <repository-url>
 cd mcp_pydantic_docs
-
-# Create virtual environment and install dependencies
 uv sync
 
-# The server will auto-build indices on first run
-# Or manually build them:
-uv run python -m mcp_pydantic_docs.indexer
-
-# Verify installation
+# Server auto-builds indices on first run
 uv run mcp-pydantic-docs
-```
-
-**Note:** The server automatically builds search indices from included JSONL files on first startup if they don't exist. This typically takes 5-10 seconds.
-
-## Installation
-
-### Development Setup
-
-1. **Create virtual environment and install dependencies:**
-```bash
-cd mcp_pydantic_docs
-uv sync
-```
-
-This creates `.venv/` and installs all dependencies from `pyproject.toml`.
-
-2. **Build search indices:**
-```bash
-uv run python -m mcp_pydantic_docs.indexer
-```
-
-Generates:
-- `data/pydantic_all_bm25.pkl` (~3.2MB)
-- `data/pydantic_all_records.pkl` (~6MB)
-
-3. **Test the server:**
-```bash
-uv run mcp-pydantic-docs
-```
-
-### Production Deployment
-
-**Option 1: Direct execution with uv**
-```bash
-uv --directory /path/to/mcp_pydantic_docs run mcp-pydantic-docs
-```
-
-**Option 2: Build and install wheel**
-```bash
-# Build distribution
-uv build
-
-# Install wheel
-uv pip install dist/mcp_pydantic_docs-0.1.0-py3-none-any.whl
-
-# Run
-mcp-pydantic-docs
-```
-
-**Option 3: Install in editable mode**
-```bash
-uv pip install -e /path/to/mcp_pydantic_docs
 ```
 
 ## MCP Client Configuration
@@ -95,9 +37,6 @@ Add to your MCP settings (e.g., `cline_mcp_settings.json`):
 {
   "mcpServers": {
     "pydantic-docs": {
-      "disabled": false,
-      "timeout": 60,
-      "type": "stdio",
       "command": "uv",
       "args": [
         "--directory",
@@ -110,210 +49,98 @@ Add to your MCP settings (e.g., `cline_mcp_settings.json`):
 }
 ```
 
-Replace `/absolute/path/to/mcp_pydantic_docs` with your installation path.
-
 ## Architecture
+
+### How It Works
+
+1. **Source Extraction** (`source_extractor.py`) - Clones Pydantic repos, extracts documentation from markdown/docstrings → JSONL
+2. **Index Building** (`indexer.py`) - Processes JSONL files → BM25 search indices
+3. **MCP Server** (`mcp.py`) - Serves documentation via MCP tools
+4. **Shared Utilities** (`utils.py`) - HTML/text processing, normalization
 
 ### Directory Structure
 
 ```
 mcp_pydantic_docs/
-├── pyproject.toml              # Package configuration
-├── uv.lock                     # Locked dependencies
 ├── mcp_pydantic_docs/          # Source code
-│   ├── __init__.py
-│   ├── mcp.py                  # MCP server implementation
+│   ├── mcp.py                  # MCP server
+│   ├── source_extractor.py     # Git-based doc extraction
 │   ├── indexer.py              # BM25 index builder
-│   ├── normalize.py            # HTML to JSONL converter
-│   └── setup.py                # Setup utilities
-├── data/                       # Search data (in git: JSONL only)
-│   ├── pydantic.jsonl          # Pydantic docs (2.9MB)
-│   ├── pydantic_ai.jsonl       # Pydantic AI docs (3.3MB)
-│   ├── pydantic_all_bm25.pkl   # BM25 index (generated)
-│   └── pydantic_all_records.pkl # Document records (generated)
-├── docs_raw/                   # Raw HTML (not in git)
-│   ├── pydantic/
-│   └── pydantic_ai/
-└── docs_md/                    # Markdown cache (not in git)
+│   ├── utils.py                # Shared utilities
+│   └── setup.py                # Setup CLI
+├── data/                       # Search data
+│   ├── pydantic.jsonl          # Pydantic docs (2.9MB, in git)
+│   ├── pydantic_ai.jsonl       # Pydantic AI docs (3.3MB, in git)
+│   ├── *_bm25.pkl              # BM25 index (generated)
+│   └── *_records.pkl           # Document records (generated)
+└── docs_raw/                   # Source repos (not in git)
+    ├── pydantic/               # Cloned from GitHub
+    └── pydantic_ai/            # Cloned from GitHub
 ```
 
-### Path Resolution
+### Data Flow
 
-The server automatically locates data directories:
-
-1. Searches up from `mcp.py` for `data/` or `docs_raw/`
-2. Falls back to relative paths from package directory
-3. Can be overridden with environment variables:
-   - `PDA_DOC_ROOT` - Path to Pydantic v2 HTML docs
-   - `PDA_DOC_ROOT_AI` - Path to Pydantic AI HTML docs
-   - `PDA_DATA_DIR` - Path to data directory
+```
+GitHub Repos → source_extractor.py → JSONL files → indexer.py → BM25 indices → mcp.py → MCP Client
+```
 
 ## Available Tools
 
-### Health Checks
+### Search & Retrieval
 
-**`health_ping`**
-```python
-Returns: "pong"
-```
+- **`pydantic_search(query, k=10)`** - Full-text search with BM25 ranking
+- **`pydantic_get(path_or_url, max_chars=None)`** - Fetch full documentation page
+- **`pydantic_section(path_or_url, anchor)`** - Extract specific section
+- **`pydantic_api(symbol, anchor=None)`** - Jump to API documentation
 
-**`health_validate`**
-```python
-Returns: {
-  "valid": bool,
-  "message": str,
-  "bm25_present": bool,
-  "records_present": bool,
-  "bm25_size_mb": float,
-  "records_size_mb": float
-}
-```
+### Health & Admin
 
-### Documentation Access
-
-**`pydantic_search`**
-```python
-Parameters:
-  - query: str (search query)
-  - k: int = 10 (number of results)
-
-Returns: SearchResponse {
-  "results": [
-    {
-      "title": str,
-      "url": str,
-      "anchor": str | null,
-      "snippet": str
-    }
-  ]
-}
-```
-
-**`pydantic_get`**
-```python
-Parameters:
-  - path_or_url: str (relative path or full URL)
-
-Returns: GetResponse {
-  "url": str,
-  "path": str,
-  "text": str,
-  "html": str
-}
-```
-
-**`pydantic_section`**
-```python
-Parameters:
-  - path_or_url: str
-  - anchor: str (section ID)
-
-Returns: SectionResponse {
-  "url": str,
-  "path": str,
-  "anchor": str,
-  "section": str,
-  "truncated": bool
-}
-```
-
-**`pydantic_api`**
-```python
-Parameters:
-  - symbol: str (e.g., "BaseModel", "TypeAdapter")
-  - anchor: str | null (optional section)
-
-Returns: dict {
-  "symbol": str,
-  "url": str,
-  "section": str | "text": str
-}
-```
-
-### Administration
-
-**`pydantic_mode`**
-```python
-Returns: {
-  "offline_only": bool,
-  "doc_root": str,
-  "doc_root_ai": str,
-  "data_dir": str,
-  "bm25_present": bool,
-  "counts": {
-    "pydantic_html": int,
-    "pydantic_ai_html": int
-  },
-  "display_bases": dict
-}
-```
-
-**`admin_cache_status`**
-```python
-Returns: {
-  "paths": dict,
-  "documentation": dict,
-  "jsonl_data": dict,t
-  "search_indices": dict,
-  "offline_mode": bool
-}
-```
-
-**`admin_rebuild_indices`**
-```python
-Returns: {
-  "success": bool,
-  "message": str,
-  "bm25_size_mb": float,
-  "records_size_mb": float
-}
-```
+- **`health_ping()`** - Server health check
+- **`health_validate()`** - Validate search indices
+- **`pydantic_mode()`** - Server configuration
+- **`admin_cache_status()`** - Detailed cache status
+- **`admin_rebuild_indices()`** - Rebuild search indices
 
 ## Updating Documentation
 
-### Rebuild Indices
+### Rebuild from Existing JSONL
 
 ```bash
 uv run python -m mcp_pydantic_docs.indexer
 ```
 
-### Download Latest Documentation
+### Extract Fresh Documentation
 
 ```bash
-# Check current status
+# Check status
 uv run python -m mcp_pydantic_docs.setup --status
 
-# Download and build indices
+# Download and extract from GitHub
 uv run python -m mcp_pydantic_docs.setup --download --build-index
-
-# Force re-download
-uv run python -m mcp_pydantic_docs.setup --download --force
 
 # Clean cache
 uv run python -m mcp_pydantic_docs.setup --clean
 ```
 
-## Security
+## Configuration
 
-### Offline Mode (Default)
+### Environment Variables
 
-- `OFFLINE_ONLY = True` in `mcp.py`
-- Blocks all HTTP/HTTPS requests except known base URLs as identifiers
-- File path validation prevents directory traversal
-- All content served from local cache
+- `PDA_DOC_ROOT` - Pydantic v2 source path
+- `PDA_DOC_ROOT_AI` - Pydantic AI source path
+- `PDA_DATA_DIR` - Data directory path
 
-### Enabling Online Fallback
+### Offline Mode
 
-Edit `mcp_pydantic_docs/mcp.py`:
-```python
-OFFLINE_ONLY = False  # Allow remote fetching
-```
+Default: **Enabled** (`OFFLINE_ONLY = True` in `mcp.py`)
 
-**Note:** Online mode is not recommended for production use.
+- Blocks remote requests
+- Validates file paths
+- All content from local cache
 
 ## Development
 
-### Running Tests
+### Run Tests
 
 ```bash
 uv run pytest
@@ -322,99 +149,40 @@ uv run pytest
 ### Code Quality
 
 ```bash
-# Format code
-uv run black mcp_pydantic_docs/
-
-# Lint
-uv run ruff check mcp_pydantic_docs/
-
-# Type check
-uv run mypy mcp_pydantic_docs/
+uv run black mcp_pydantic_docs/  # Format
+uv run ruff check .              # Lint
+uv run mypy mcp_pydantic_docs/   # Type check
 ```
-
-### Building Package
-
-```bash
-# Build wheel and sdist
-uv build
-
-# Output: dist/mcp_pydantic_docs-0.1.0-py3-none-any.whl
-#         dist/mcp_pydantic_docs-0.1.0.tar.gz
-```
-
-## Git Strategy
-
-### Included in Repository
-- Source code
-- `uv.lock` (reproducible builds)
-- `data/*.jsonl` (~6MB, pre-processed data)
-- Documentation and configuration
-
-### Excluded from Repository
-- `.venv/` (virtual environment)
-- `data/*.pkl` (binary indices, rebuilt from JSONL)
-- `docs_raw/` (45MB HTML, downloadable)
-- `docs_md/` (derived data)
 
 ## Troubleshooting
 
-### Search indices not found
-
+**Search indices not found:**
 ```bash
 uv run python -m mcp_pydantic_docs.indexer
 ```
 
-### Wrong Python version
-
-Ensure Python 3.12+ is active:
+**Wrong Python version:**
 ```bash
-uv python list
 uv python install 3.12
 ```
 
-### Path resolution fails
-
-Set explicit paths:
+**Server won't start:**
 ```bash
-export PDA_DATA_DIR=/path/to/mcp_pydantic_docs/data
-export PDA_DOC_ROOT=/path/to/mcp_pydantic_docs/docs_raw/pydantic
-export PDA_DOC_ROOT_AI=/path/to/mcp_pydantic_docs/docs_raw/pydantic_ai
-```
-
-### MCP connection issues
-
-Verify server runs standalone:
-```bash
+# Test standalone
 uv run mcp-pydantic-docs
-# Should start and listen on stdio
+
+# Check indices
+uv run python -m mcp_pydantic_docs.setup --status
 ```
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](LICENSE) file.
 
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:
-
+See [CONTRIBUTING.md](CONTRIBUTING.md) for:
 - Development setup
-- Code style and standards
+- Code style
 - Testing requirements
 - Pull request process
-- Commit message conventions
-
-For bugs and feature requests, please open an issue on GitHub.
-
-
-git commit -m "fix: rename tools to use underscores + optimize text normalization
-
-- Rename 9 MCP tools from dot notation to underscore (health.ping → health_ping) per issue https://github.com/Magic-Man-us/mcp_pydantic_docs/issues/1
-- Add _normalize_text() function for index-time cleaning
-- Remove excessive whitespace: 3,732+ triple newlines eliminated
-- avg of 21% character reduction (163k → 128k chars per page when testing)
-- Fix redundant imports in setup.py
-
-Performance impact: 7.6% overall speed improvement
-- Search: 6.6% faster
-- Page retrieval: 9.3% faster
-- Section extraction: 6.7% faster"
