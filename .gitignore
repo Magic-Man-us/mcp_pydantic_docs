@@ -40,6 +40,9 @@ data/*.pkl
 docs_raw/
 docs_md/
 
+# Rust build artifacts
+rust/target/
+
 # OS
 .DS_Store
 Thumbs.db
